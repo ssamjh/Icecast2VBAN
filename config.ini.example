@@ -1,0 +1,7 @@
+[input]
+url = https://icecast.sjh.at/spotifynet-hq
+
+[vban]
+ip = 12.34.56.78
+port = 6980
+name = SpoptifyNet

@@ -1,0 +1,11 @@
+version: "3"
+
+services:
+  vban_send:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./vban_send.py:/app/vban_send.py
+      - ./config.ini:/app/config.ini
+    restart: unless-stopped
