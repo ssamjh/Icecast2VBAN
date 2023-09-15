@@ -3,7 +3,6 @@ import struct
 import subprocess
 import threading
 import configparser
-import queue
 
 
 class VBAN_Send(object):
@@ -66,14 +65,14 @@ class VBAN_Send(object):
             print("FFmpeg Error:", err)
 
     def runforever(self, url):
-        cmd = ["ffmpeg", "-re", "-i", url, "-f", "s16le", "-acodec", "pcm_s16le",
-               "-ar", "48000", "-ac", "2", "-bufsize", "1280K", "-"]
+        cmd = ["ffmpeg", "-hide_banner", "-re", "-i", url, "-f", "s16le", "-acodec", "pcm_s16le",
+               "-ar", "48000", "-ac", "2", "-loglevel", "warning", "-"]
         process = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=4096)
 
         ffmpeg_thread = threading.Thread(
             target=self._ffmpeg_thread, args=(process,))
-        
+
         error_log_thread = threading.Thread(
             target=self._log_errors, args=(process,))
 
@@ -85,8 +84,7 @@ class VBAN_Send(object):
 
     def _log_errors(self, process):
         for line in process.stderr:
-            print(f"FFMPEG Error: {line.decode().rstrip()}")
-
+            print(f"{line.decode().rstrip()}")
 
 
 if __name__ == "__main__":
@@ -100,5 +98,5 @@ if __name__ == "__main__":
     vban_name = config['vban']['name']
 
     sender = VBAN_Send(vban_ip, vban_port, vban_name,
-                       48000, verbose=True)
+                       48000)
     sender.runforever(input_url)
