@@ -98,5 +98,5 @@ if __name__ == "__main__":
     vban_name = config['vban']['name']
 
     sender = VBAN_Send(vban_ip, vban_port, vban_name,
-                       48000)
+                       48000, verbose=True)
     sender.runforever(input_url)

@@ -8,4 +8,5 @@ services:
     volumes:
       - ./vban_send.py:/app/vban_send.py
       - ./config.ini:/app/config.ini
+    network_mode: host
     restart: unless-stopped
