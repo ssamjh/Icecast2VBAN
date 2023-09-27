@@ -3,6 +3,10 @@ import struct
 import subprocess
 import threading
 import configparser
+import logging
+import time
+import os
+from logging.handlers import RotatingFileHandler
 
 
 class VBAN_Send(object):
@@ -15,26 +19,30 @@ class VBAN_Send(object):
         self.const_VBAN_SR = [6000, 12000, 24000, 48000, 96000, 192000, 384000, 8000, 16000,
                               32000, 64000, 128000, 256000, 512000, 11025, 22050, 44100, 88200, 176400, 352800, 705600]
         if sampRate not in self.const_VBAN_SR:
+            logging.error("SampRate not valid/compatible")
             print("SampRate not valid/compatible")
             return
         self.samprate = sampRate
         self.chunkSize = 256
-        self.channels = 2  # Assuming stereo for simplicity
+        self.channels = 2
         self.framecounter = 0
         self.verbose = verbose
         self.rawPcm = None
         self.rawData = None
+        self.last_active_time = None
 
     def _constructFrame(self, pcmData):
         header = b"VBAN"
         header += bytes([self.const_VBAN_SR.index(self.samprate)])
         header += bytes([self.chunkSize-1])
         header += bytes([self.channels-1])
-        header += b'\x01'  # VBAN_CODEC_PCM
+        header += b'\x01'
         header += bytes(self.streamName + "\x00" *
                         (16 - len(self.streamName)), 'utf-8')
         header += struct.pack("<L", self.framecounter)
         if self.verbose:
+            logging.debug("SVBAN "+str(self.samprate)+"Hz "+str(self.chunkSize)+"samp "+str(self.channels) +
+                          "chan Format:1 Name:"+self.streamName+" Frame:"+str(self.framecounter))
             print("SVBAN "+str(self.samprate)+"Hz "+str(self.chunkSize)+"samp "+str(self.channels) +
                   "chan Format:1 Name:"+self.streamName+" Frame:"+str(self.framecounter))
         return header + pcmData
@@ -42,6 +50,7 @@ class VBAN_Send(object):
     def runonce(self, pcmData):
         try:
             self.framecounter += 1
+            self.last_active_time = time.time()
             self.rawPcm = pcmData
             self.rawData = self._constructFrame(self.rawPcm)
             self.sock.sendto(self.rawData, (self.toIp, self.toPort))
@@ -87,6 +96,14 @@ class VBAN_Send(object):
             print(f"{line.decode().rstrip()}")
 
 
+def monitor_frame_counter(sender):
+    while True:
+        time.sleep(5)  # Check every 5 seconds
+        if sender.last_active_time is not None and time.time() - sender.last_active_time > 10:
+            print("Frame counter inactive for more than 10 seconds. Terminating.")
+            os._exit(1)
+
+
 if __name__ == "__main__":
     # Read from the config file
     config = configparser.ConfigParser()
@@ -97,6 +114,10 @@ if __name__ == "__main__":
     vban_port = int(config['vban']['port'])
     vban_name = config['vban']['name']
 
-    sender = VBAN_Send(vban_ip, vban_port, vban_name,
-                       48000, verbose=True)
+    sender = VBAN_Send(vban_ip, vban_port, vban_name, 48000, verbose=True)
+
+    monitor_thread = threading.Thread(
+        target=monitor_frame_counter, args=(sender,))
+    monitor_thread.start()
+
     sender.runforever(input_url)
