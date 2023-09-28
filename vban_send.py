@@ -62,16 +62,13 @@ class VBAN_Send(object):
         while True:
             chunk = process.stdout.read(self.chunkSize * self.channels * 2)
             if not chunk:
-                print("No chunk read. Thread terminating.")  # For debugging
-                break
+                print("No chunk read. Terminating script.")  # For debugging
+                os._exit(1)
             try:
                 self.runonce(chunk)
             except Exception as e:
                 print("Error sending data:", e)
-                break
-        err = process.stderr.read().decode('utf-8')
-        if err:
-            print("FFmpeg Error:", err)
+                os._exit(1)
 
     def runforever(self, url):
         cmd = ["ffmpeg", "-hide_banner", "-re", "-i", url, "-f", "s16le", "-acodec", "pcm_s16le",
