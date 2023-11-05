@@ -10,3 +10,8 @@ services:
       - ./config.ini:/app/config.ini
     network_mode: host
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
