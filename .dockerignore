@@ -1,0 +1,18 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+
+# Config files
+config.ini
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so

@@ -1,14 +1,18 @@
 # Use a base Python image
-FROM python:3.11-slim
+FROM python:3.13-slim
 
-# Install depends
-RUN apt-get update && apt-get install -y ffmpeg && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
 WORKDIR /app
 
-# Install Python dependencies
-RUN pip install configparser
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD test -f /tmp/vban_healthy || exit 1
 
-# Command to run the script
-CMD ["python", "./vban_send.py"]
+# Run Python in unbuffered mode for better logging
+CMD ["python", "-u", "./vban_send.py"]

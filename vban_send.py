@@ -15,6 +15,7 @@ class VBAN_Send(object):
         self.toPort = toPort
         self.streamName = streamName
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.settimeout(5.0)  # 5 second timeout for socket operations
         self.sock.connect((self.toIp, self.toPort))
         self.const_VBAN_SR = [6000, 12000, 24000, 48000, 96000, 192000, 384000, 8000, 16000,
                               32000, 64000, 128000, 256000, 512000, 11025, 22050, 44100, 88200, 176400, 352800, 705600]
@@ -49,8 +50,17 @@ class VBAN_Send(object):
             self.rawPcm = pcmData
             self.rawData = self._constructFrame(self.rawPcm)
             self.sock.sendto(self.rawData, (self.toIp, self.toPort))
+            self._update_healthcheck()
         except Exception as e:
             print(e)
+
+    def _update_healthcheck(self):
+        """Update healthcheck file for Docker HEALTHCHECK"""
+        try:
+            with open('/tmp/vban_healthy', 'w') as f:
+                f.write(str(int(time.time())))
+        except:
+            pass  # Don't fail if healthcheck file can't be written
 
     def _ffmpeg_thread(self, process):
         while True:
@@ -72,9 +82,11 @@ class VBAN_Send(object):
 
         ffmpeg_thread = threading.Thread(
             target=self._ffmpeg_thread, args=(process,))
+        ffmpeg_thread.daemon = True
 
         error_log_thread = threading.Thread(
             target=self._log_errors, args=(process,))
+        error_log_thread.daemon = True
 
         ffmpeg_thread.start()
         error_log_thread.start()
@@ -111,6 +123,7 @@ if __name__ == "__main__":
 
     monitor_thread = threading.Thread(
         target=monitor_frame_counter, args=(sender,))
+    monitor_thread.daemon = True
     monitor_thread.start()
 
     sender.runforever(input_url)
