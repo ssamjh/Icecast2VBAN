@@ -40,11 +40,6 @@ class VBAN_Send(object):
         header += bytes(self.streamName + "\x00" *
                         (16 - len(self.streamName)), 'utf-8')
         header += struct.pack("<L", self.framecounter)
-        if self.verbose:
-            logging.debug("SVBAN "+str(self.samprate)+"Hz "+str(self.chunkSize)+"samp "+str(self.channels) +
-                          "chan Format:1 Name:"+self.streamName+" Frame:"+str(self.framecounter))
-            print("SVBAN "+str(self.samprate)+"Hz "+str(self.chunkSize)+"samp "+str(self.channels) +
-                  "chan Format:1 Name:"+self.streamName+" Frame:"+str(self.framecounter))
         return header + pcmData
 
     def runonce(self, pcmData):
@@ -58,7 +53,6 @@ class VBAN_Send(object):
             print(e)
 
     def _ffmpeg_thread(self, process):
-        print("Thread started.")  # For debugging
         while True:
             chunk = process.stdout.read(self.chunkSize * self.channels * 2)
             if not chunk:
@@ -90,7 +84,9 @@ class VBAN_Send(object):
 
     def _log_errors(self, process):
         for line in process.stderr:
-            print(f"{line.decode().rstrip()}")
+            line_str = line.decode().rstrip()
+            if line_str:  # Only log non-empty lines
+                logging.error(f"FFmpeg: {line_str}")
 
 
 def monitor_frame_counter(sender):
