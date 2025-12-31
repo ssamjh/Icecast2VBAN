@@ -6,7 +6,6 @@ import configparser
 import logging
 import time
 import os
-import queue
 from logging.handlers import RotatingFileHandler
 
 
@@ -18,13 +17,8 @@ class VBAN_Send(object):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         # Read performance parameters from config
-        socket_timeout = float(config.get('performance', 'socket_timeout', fallback='0.1'))
-        self.queue_size = int(config.get('performance', 'queue_size', fallback='20'))
-        self.healthcheck_interval = int(config.get('performance', 'healthcheck_interval', fallback='50'))
-        self.pipe_buffer_size = int(config.get('performance', 'pipe_buffer_size', fallback='262144'))
-
+        socket_timeout = float(config.get('performance', 'socket_timeout', fallback='5.0'))
         self.sock.settimeout(socket_timeout)
-        self.sock.connect((self.toIp, self.toPort))
         self.const_VBAN_SR = [6000, 12000, 24000, 48000, 96000, 192000, 384000, 8000, 16000,
                               32000, 64000, 128000, 256000, 512000, 11025, 22050, 44100, 88200, 176400, 352800, 705600]
         if sampRate not in self.const_VBAN_SR:
@@ -40,23 +34,9 @@ class VBAN_Send(object):
         self.rawData = None
         self.last_active_time = None
 
-        # Intermediate packet queue for buffering
-        self.packet_queue = queue.Queue(maxsize=self.queue_size)
-
         # Graceful shutdown event
         self.running = threading.Event()
         self.running.set()
-
-        # Healthcheck throttling counter
-        self.healthcheck_counter = 0
-
-        # Statistics tracking
-        self.stats = {
-            'packets_sent': 0,
-            'packets_dropped': 0,
-            'queue_full_count': 0,
-            'queue_empty_count': 0
-        }
 
     def _constructFrame(self, pcmData):
         header = b"VBAN"
@@ -81,94 +61,75 @@ class VBAN_Send(object):
             print(e)
 
     def _update_healthcheck(self):
-        """Update healthcheck file for Docker HEALTHCHECK (throttled)"""
-        self.healthcheck_counter += 1
-        if self.healthcheck_counter >= self.healthcheck_interval:
-            self.healthcheck_counter = 0
-            try:
-                with open('/tmp/vban_healthy', 'w') as f:
-                    f.write(str(int(time.time())))
-            except:
-                pass  # Don't fail if healthcheck file can't be written
+        """Update healthcheck file for Docker HEALTHCHECK"""
+        try:
+            with open('/tmp/vban_healthy', 'w') as f:
+                f.write(str(int(time.time())))
+        except:
+            pass  # Don't fail if healthcheck file can't be written
 
-    def _ffmpeg_read_thread(self, process):
-        """Fast read thread - only reads from FFmpeg and queues packets"""
+    def _ffmpeg_thread(self, process):
+        """Read from FFmpeg and send packets directly"""
         while self.running.is_set():
             chunk = process.stdout.read(self.chunkSize * self.channels * 2)
             if not chunk:
                 logging.error("FFmpeg stream ended")
                 self.running.clear()
                 break
+
             try:
-                self.packet_queue.put(chunk, timeout=1.0)
-            except queue.Full:
-                logging.warning("Packet queue full, dropping packet")
-                self.stats['queue_full_count'] += 1
-                self.stats['packets_dropped'] += 1
-
-    def _vban_send_thread(self):
-        """Timed send thread - sends packets at precise intervals"""
-        packet_interval = self.chunkSize / self.samprate  # 256/48000 = 5.33ms
-        next_send_time = time.perf_counter()
-
-        while self.running.is_set():
-            try:
-                chunk = self.packet_queue.get(timeout=1.0)
-
-                # Send packet
                 self.framecounter += 1
                 self.last_active_time = time.time()
                 rawData = self._constructFrame(chunk)
-                self.sock.sendto(rawData, (self.toIp, self.toPort))
+                try:
+                    self.sock.sendto(rawData, (self.toIp, self.toPort))
+                except (ConnectionRefusedError, OSError) as e:
+                    logging.warning(f"Socket error (ignoring): {e}")
+                    # UDP is connectionless, these errors are non-fatal
                 self._update_healthcheck()
-                self.stats['packets_sent'] += 1
-
-                # Precise timing for next packet
-                next_send_time += packet_interval
-                sleep_time = next_send_time - time.perf_counter()
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                else:
-                    # Fell behind, reset timing
-                    next_send_time = time.perf_counter()
-
-            except queue.Empty:
-                logging.warning("Packet queue empty - stream underrun")
-                self.stats['queue_empty_count'] += 1
+            except Exception as e:
+                logging.error(f"Error sending data: {e}")
+                self.running.clear()
+                break
 
     def runforever(self, url):
-        # Optimized FFmpeg command for low latency
-        cmd = ["ffmpeg", "-hide_banner",
-               "-analyzeduration", "0", "-probesize", "32768",
-               "-fflags", "+nobuffer+flush_packets", "-flags", "low_delay",
-               "-i", url,
+        cmd = ["ffmpeg", "-hide_banner", "-re", "-i", url,
                "-f", "s16le", "-acodec", "pcm_s16le",
                "-ar", "48000", "-ac", "2",
                "-loglevel", "warning", "-"]
 
         process = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            bufsize=self.pipe_buffer_size)
+            bufsize=4096)
 
-        # Separate read and send threads for pipeline parallelism
-        read_thread = threading.Thread(
-            target=self._ffmpeg_read_thread, args=(process,))
-        read_thread.daemon = True
+        self.process = process  # Store for cleanup
 
-        send_thread = threading.Thread(target=self._vban_send_thread)
-        send_thread.daemon = True
+        ffmpeg_thread = threading.Thread(
+            target=self._ffmpeg_thread, args=(process,))
+        ffmpeg_thread.daemon = True
 
         error_log_thread = threading.Thread(
             target=self._log_errors, args=(process,))
         error_log_thread.daemon = True
 
-        read_thread.start()
-        send_thread.start()
+        ffmpeg_thread.start()
         error_log_thread.start()
 
-        read_thread.join()
-        send_thread.join()
-        error_log_thread.join()
+        # Wait for thread to complete or shutdown signal
+        ffmpeg_thread.join()
+
+        # Ensure FFmpeg process is terminated
+        if process.poll() is None:
+            logging.info("Terminating FFmpeg process")
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logging.warning("FFmpeg didn't terminate, killing")
+                process.kill()
+                process.wait()
+
+        error_log_thread.join(timeout=1)
 
     def _log_errors(self, process):
         for line in process.stderr:
