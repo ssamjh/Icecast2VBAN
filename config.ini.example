@@ -5,3 +5,22 @@ url = https://icecast.sjh.at/spotifynet-hq
 ip = 12.34.56.78
 port = 6980
 name = SpotifyNet
+
+[performance]
+# FFmpeg pipe buffer size in bytes (default: 262144 = 256 KB, ~1.36 seconds buffering)
+pipe_buffer_size = 262144
+
+# Intermediate queue size in packets (default: 20 packets, ~107ms buffering)
+queue_size = 20
+
+# Healthcheck file update interval in packets (default: 50 packets, ~267ms)
+healthcheck_interval = 50
+
+# Socket timeout in seconds (default: 0.1 seconds)
+socket_timeout = 0.1
+
+# Initial retry delay in seconds after stream failure (default: 1 second)
+retry_delay = 1
+
+# Maximum retry delay in seconds (default: 60 seconds)
+max_retry_delay = 60
