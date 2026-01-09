@@ -41,6 +41,12 @@ class DebugStats:
         # Timing accuracy metrics
         self.timing_corrections = 0
 
+        # Throttling metrics
+        self.throttle_events = 0
+        self.throttle_time_total = 0.0  # Total ms spent throttling
+        self.queue_growth_events = 0
+        self.queue_shrink_events = 0
+
         # Stream info
         self.stream_type = "unknown"
         self.stream_url = ""
@@ -121,6 +127,22 @@ class DebugStats:
         if self.enabled:
             self.packets_dropped += 1
 
+    def record_throttle(self, sleep_time):
+        """Record throttling event and sleep time"""
+        if self.enabled:
+            self.throttle_events += 1
+            self.throttle_time_total += sleep_time * 1000  # Convert to ms
+
+    def record_queue_growth(self):
+        """Record queue expansion event"""
+        if self.enabled:
+            self.queue_growth_events += 1
+
+    def record_queue_shrink(self):
+        """Record queue shrink event"""
+        if self.enabled:
+            self.queue_shrink_events += 1
+
     def should_report(self):
         """Check if it's time to generate a report"""
         if not self.enabled:
@@ -185,6 +207,18 @@ class DebugStats:
             buffer_health = (1 - (self.buffer_underruns / max(self.packets_sent, 1))) * 100
             logging.info(f"  Buffer Health: {buffer_health:.2f}% (higher is better)")
 
+        # Throttling statistics if throttling was active
+        if self.throttle_events > 0:
+            runtime_ms = elapsed * 1000
+            avg_throttle = self.throttle_time_total / self.throttle_events
+            throttle_pct = (self.throttle_time_total / runtime_ms) * 100
+            logging.info("-" * 80)
+            logging.info(f"Throttling Statistics:")
+            logging.info(f"  Active: {throttle_pct:.1f}% | Events: {self.throttle_events}")
+            logging.info(f"  Avg Sleep: {avg_throttle:.3f}ms")
+            if self.queue_growth_events > 0 or self.queue_shrink_events > 0:
+                logging.info(f"  Queue Resizes: {self.queue_growth_events} grew, {self.queue_shrink_events} shrunk")
+
         logging.info("=" * 80)
 
         # Reset counters for next interval
@@ -231,6 +265,19 @@ class VBAN_Send(object):
         if debug_enabled:
             logging.info(f"[DEBUG] Packet queue size: {queue_size} packets (~{queue_size * 5.33:.1f}ms buffering)")
 
+        # Adaptive throttling configuration
+        self.enable_throttling = config.getboolean('performance', 'enable_adaptive_throttling', fallback=True)
+        self.throttle_threshold = config.getfloat('performance', 'throttle_threshold', fallback=0.70)
+        self.target_min = config.getfloat('performance', 'target_queue_min', fallback=0.75)
+        self.target_max = config.getfloat('performance', 'target_queue_max', fallback=0.90)
+
+        # Dynamic queue growth configuration
+        self.enable_queue_growth = config.getboolean('performance', 'enable_queue_growth', fallback=True)
+        self.max_queue_size = int(config.get('performance', 'max_queue_size', fallback='200'))
+        self.growth_increment = int(config.get('performance', 'growth_increment', fallback='20'))
+        self.initial_queue_size = queue_size  # Remember initial size
+        self.queue_lock = threading.Lock()  # For thread-safe queue resizing
+
         # Graceful shutdown event
         self.running = threading.Event()
         self.running.set()
@@ -253,6 +300,25 @@ class VBAN_Send(object):
                 f.write(str(int(time.time())))
         except:
             pass  # Don't fail if healthcheck file can't be written
+
+    def _resize_queue(self, new_size):
+        """Resize packet queue by creating new queue and transferring packets"""
+        with self.queue_lock:  # Prevent race conditions
+            old_queue = self.packet_queue
+            new_queue = queue.Queue(maxsize=new_size)
+
+            # Transfer existing packets
+            while not old_queue.empty():
+                try:
+                    item = old_queue.get_nowait()
+                    new_queue.put_nowait(item)
+                except:
+                    break
+
+            self.packet_queue = new_queue
+
+            if self.debug_stats.enabled:
+                logging.info(f"[RESIZE] Queue resized: {old_queue.maxsize} → {new_size} packets ({new_size * 5.33:.1f}ms buffer)")
 
     def _ffmpeg_thread(self, process):
         """Read from FFmpeg and enqueue packets"""
@@ -281,15 +347,59 @@ class VBAN_Send(object):
                     self.packet_queue.put((chunk, read_time), timeout=0.1)
                 except queue.Full:
                     if self.debug_stats.enabled:
-                        logging.warning("[DEBUG] Packet queue full, dropping packet")
-                    self.debug_stats.record_queue_full()
-                    self.debug_stats.record_drop()
-                    # Continue to avoid blocking FFmpeg
+                        logging.warning("[DEBUG] Packet queue full, attempting resize")
+
+                    # Try to grow queue if enabled
+                    if self.enable_queue_growth:
+                        current_size = self.packet_queue.maxsize
+                        if current_size < self.max_queue_size:
+                            new_size = min(current_size + self.growth_increment, self.max_queue_size)
+                            self._resize_queue(new_size)
+
+                            # Retry enqueue with new larger queue
+                            try:
+                                self.packet_queue.put((chunk, read_time), timeout=0.1)
+                                self.debug_stats.record_queue_growth()
+                                # Success - skip to throttling check below
+                            except queue.Full:
+                                pass  # Still full, fall through to drop
+
+                    # Fallback: drop packet
+                    if self.packet_queue.qsize() >= self.packet_queue.maxsize:
+                        logging.warning("[DROP] Packet queue full despite resize")
+                        self.debug_stats.record_queue_full()
+                        self.debug_stats.record_drop()
 
             except Exception as e:
                 logging.error(f"Error enqueueing packet: {e}")
                 self.running.clear()
                 break
+
+            # ADAPTIVE THROTTLING
+            if self.enable_throttling:
+                current_depth = self.packet_queue.qsize()
+                max_size = self.packet_queue.maxsize
+                fullness = current_depth / max_size if max_size > 0 else 0
+
+                # Calculate target interval for this audio format
+                target_interval = self.chunkSize / self.samprate  # 5.333ms for 256@48kHz
+
+                # Throttle if queue is filling up
+                if fullness >= self.throttle_threshold:
+                    # Calculate throttle factor (0.0 to 1.0)
+                    # At threshold (70%): factor = 0.0 (no sleep)
+                    # At 100% full: factor = 1.0 (full target_interval sleep)
+                    throttle_range = 1.0 - self.throttle_threshold
+                    throttle_factor = (fullness - self.throttle_threshold) / throttle_range
+
+                    sleep_time = target_interval * throttle_factor
+                    time.sleep(sleep_time)
+
+                    # Track throttling metrics
+                    self.debug_stats.record_throttle(sleep_time)
+
+                    if self.debug_stats.enabled and self.debug_stats.packets_sent % 100 == 0:
+                        logging.debug(f"[THROTTLE] Queue {current_depth}/{max_size} ({fullness:.0%}), slept {sleep_time*1000:.2f}ms")
 
     def _sender_thread(self):
         """Dequeue packets and send at precise intervals (dejitter buffer)"""
@@ -384,6 +494,35 @@ class VBAN_Send(object):
                 logging.error(f"Error sending packet: {e}")
                 # Don't break on individual packet errors, continue processing
 
+    def _queue_resize_monitor(self):
+        """Background thread to shrink queue when conditions are stable"""
+        CHECK_INTERVAL = 30  # Check every 30 seconds
+        SHRINK_THRESHOLD = 0.50  # Shrink if avg < 50% full
+
+        while self.running.is_set():
+            time.sleep(CHECK_INTERVAL)
+
+            if not self.enable_queue_growth:
+                continue
+
+            current_size = self.packet_queue.maxsize
+            if current_size <= self.initial_queue_size:
+                continue  # Already at minimum
+
+            # Calculate average queue depth over interval
+            if self.debug_stats.queue_depths:
+                # Get last 30s of data (assuming ~10Hz sampling)
+                recent_depths = list(self.debug_stats.queue_depths)[-300:] if len(self.debug_stats.queue_depths) > 0 else []
+                if len(recent_depths) > 0:
+                    avg_depth = statistics.mean(recent_depths)
+                    avg_fullness = avg_depth / current_size
+
+                    if avg_fullness < SHRINK_THRESHOLD:
+                        # Queue is underutilized - shrink it
+                        new_size = max(current_size - self.growth_increment, self.initial_queue_size)
+                        self._resize_queue(new_size)
+                        self.debug_stats.record_queue_shrink()
+
     def runforever(self, url):
         # Detect stream type for debugging
         self.debug_stats.detect_stream_type(url)
@@ -427,9 +566,15 @@ class VBAN_Send(object):
             target=self._log_errors, args=(process,))
         error_log_thread.daemon = True
 
+        # Start queue resize monitor thread
+        resize_monitor_thread = threading.Thread(
+            target=self._queue_resize_monitor)
+        resize_monitor_thread.daemon = True
+
         ffmpeg_thread.start()
         sender_thread.start()
         error_log_thread.start()
+        resize_monitor_thread.start()
 
         # Wait for threads to complete or shutdown signal
         ffmpeg_thread.join()

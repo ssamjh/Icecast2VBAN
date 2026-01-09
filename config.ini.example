@@ -10,9 +10,29 @@ name = SpotifyNet
 # FFmpeg pipe buffer size in bytes (default: 262144 = 256 KB, ~1.36 seconds buffering)
 pipe_buffer_size = 262144
 
-# Intermediate queue size in packets (default: 20 packets, ~107ms buffering)
+# Intermediate queue size in packets (default: 40 packets, ~213ms buffering)
 # This acts as a dejitter buffer to smooth out network timing variations
-queue_size = 20
+# Note: Queue may grow dynamically if enable_queue_growth is enabled
+queue_size = 40
+
+# Adaptive throttling to prevent queue overflow (default: true)
+enable_adaptive_throttling = true
+
+# Start throttling when queue reaches this threshold (default: 0.70 = 70% full)
+throttle_threshold = 0.70
+
+# Target queue fullness range (default: 75-90%)
+target_queue_min = 0.75
+target_queue_max = 0.90
+
+# Dynamic queue growth for burst handling (default: true)
+enable_queue_growth = true
+
+# Maximum queue size limit in packets (default: 200 packets, ~1066ms buffering)
+max_queue_size = 200
+
+# Packets to add when growing queue (default: 20 packets)
+growth_increment = 20
 
 # Initial buffer fill before starting playback (default: 10 packets, ~53ms)
 # Higher values reduce stuttering risk but increase startup delay
