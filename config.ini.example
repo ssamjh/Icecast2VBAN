@@ -11,7 +11,13 @@ name = SpotifyNet
 pipe_buffer_size = 262144
 
 # Intermediate queue size in packets (default: 20 packets, ~107ms buffering)
+# This acts as a dejitter buffer to smooth out network timing variations
 queue_size = 20
+
+# Initial buffer fill before starting playback (default: 10 packets, ~53ms)
+# Higher values reduce stuttering risk but increase startup delay
+# Set to 0 to start immediately (not recommended)
+initial_buffer_fill = 10
 
 # Healthcheck file update interval in packets (default: 50 packets, ~267ms)
 healthcheck_interval = 50
@@ -24,3 +30,11 @@ retry_delay = 1
 
 # Maximum retry delay in seconds (default: 60 seconds)
 max_retry_delay = 60
+
+[debug]
+# Enable audio stuttering debug mode (default: false)
+# When enabled, logs detailed timing metrics, buffer stats, and stream analysis
+debug_audio = false
+
+# Debug statistics report interval in seconds (default: 10)
+debug_report_interval = 10
