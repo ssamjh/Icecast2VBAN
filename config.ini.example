@@ -18,8 +18,9 @@ queue_size = 40
 # Adaptive throttling to prevent queue overflow (default: true)
 enable_adaptive_throttling = true
 
-# Start throttling when queue reaches this threshold (default: 0.70 = 70% full)
-throttle_threshold = 0.70
+# Start throttling when queue reaches this threshold (default: 0.50 = 50% full)
+# Lower values start throttling earlier, preventing queue from filling completely
+throttle_threshold = 0.50
 
 # Target queue fullness range (default: 75-90%)
 target_queue_min = 0.75

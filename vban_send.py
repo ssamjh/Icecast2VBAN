@@ -267,7 +267,7 @@ class VBAN_Send(object):
 
         # Adaptive throttling configuration
         self.enable_throttling = config.getboolean('performance', 'enable_adaptive_throttling', fallback=True)
-        self.throttle_threshold = config.getfloat('performance', 'throttle_threshold', fallback=0.70)
+        self.throttle_threshold = config.getfloat('performance', 'throttle_threshold', fallback=0.50)
         self.target_min = config.getfloat('performance', 'target_queue_min', fallback=0.75)
         self.target_max = config.getfloat('performance', 'target_queue_max', fallback=0.90)
 
@@ -387,12 +387,17 @@ class VBAN_Send(object):
                 # Throttle if queue is filling up
                 if fullness >= self.throttle_threshold:
                     # Calculate throttle factor (0.0 to 1.0)
-                    # At threshold (70%): factor = 0.0 (no sleep)
-                    # At 100% full: factor = 1.0 (full target_interval sleep)
+                    # At threshold (50%): factor = 0.0 (no sleep)
+                    # At 100% full: factor = 1.0 (maximum sleep)
                     throttle_range = 1.0 - self.throttle_threshold
                     throttle_factor = (fullness - self.throttle_threshold) / throttle_range
 
-                    sleep_time = target_interval * throttle_factor
+                    # Use exponential scaling for more aggressive throttling
+                    # At 50%: sleep ~0ms
+                    # At 75%: sleep ~2ms
+                    # At 90%: sleep ~8ms
+                    # At 100%: sleep ~16ms (3x packet interval to force queue drain)
+                    sleep_time = target_interval * (throttle_factor ** 2) * 3.0
                     time.sleep(sleep_time)
 
                     # Track throttling metrics
