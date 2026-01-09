@@ -5,8 +5,6 @@ import threading
 import configparser
 import logging
 import time
-import os
-from logging.handlers import RotatingFileHandler
 from collections import deque
 import statistics
 import queue
@@ -42,7 +40,6 @@ class DebugStats:
 
         # Timing accuracy metrics
         self.timing_corrections = 0
-        self.actual_intervals = deque(maxlen=1000)  # Track actual send timing
 
         # Stream info
         self.stream_type = "unknown"
@@ -197,7 +194,7 @@ class DebugStats:
 
 
 class VBAN_Send(object):
-    def __init__(self, toIp, toPort, streamName, sampRate, config, verbose=False):
+    def __init__(self, toIp, toPort, streamName, sampRate, config):
         self.toIp = toIp
         self.toPort = toPort
         self.streamName = streamName
@@ -217,9 +214,6 @@ class VBAN_Send(object):
         self.chunkSize = 256
         self.channels = 2
         self.framecounter = 0
-        self.verbose = verbose
-        self.rawPcm = None
-        self.rawData = None
         self.last_active_time = None
 
         # Initialize debug stats
@@ -251,17 +245,6 @@ class VBAN_Send(object):
                         (16 - len(self.streamName)), 'utf-8')
         header += struct.pack("<L", self.framecounter)
         return header + pcmData
-
-    def runonce(self, pcmData):
-        try:
-            self.framecounter += 1
-            self.last_active_time = time.time()
-            self.rawPcm = pcmData
-            self.rawData = self._constructFrame(self.rawPcm)
-            self.sock.sendto(self.rawData, (self.toIp, self.toPort))
-            self._update_healthcheck()
-        except Exception as e:
-            print(e)
 
     def _update_healthcheck(self):
         """Update healthcheck file for Docker HEALTHCHECK"""
@@ -509,7 +492,7 @@ if __name__ == "__main__":
     # Graceful recovery loop with exponential backoff
     while True:
         try:
-            sender = VBAN_Send(vban_ip, vban_port, vban_name, 48000, config, verbose=True)
+            sender = VBAN_Send(vban_ip, vban_port, vban_name, 48000, config)
 
             monitor_thread = threading.Thread(
                 target=monitor_frame_counter, args=(sender,))

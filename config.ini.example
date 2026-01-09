@@ -19,9 +19,6 @@ queue_size = 20
 # Set to 0 to start immediately (not recommended)
 initial_buffer_fill = 10
 
-# Healthcheck file update interval in packets (default: 50 packets, ~267ms)
-healthcheck_interval = 50
-
 # Socket timeout in seconds (default: 0.1 seconds)
 socket_timeout = 0.1
 
